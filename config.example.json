@@ -1,0 +1,79 @@
+{
+  "_comment": "RoomWatch config. Times in seconds unless noted. Delete any key to use the default.",
+
+  "camera": {
+    "_comment": "camera_index 0 is usually the built-in webcam. Try 0, then 1, 2 if black.",
+    "camera_index": 0,
+    "use_dshow": true,
+    "frame_width": 960,
+    "frame_height": 720,
+    "target_fps": 5,
+    "reconnect_seconds": 5
+  },
+
+  "detection": {
+    "_comment": "detect_every_n_frames: 1 = every frame. Higher = cheaper CPU, laggier entry alerts.",
+    "detect_every_n_frames": 1,
+    "face_score_threshold": 0.75,
+    "_comment_match": "recognition_threshold is cosine similarity. SFace is calibrated for 0.363. Lower = more false IDs, higher = more 'Unknown'.",
+    "recognition_threshold": 0.363,
+    "track_iou_threshold": 0.3,
+    "track_max_age_seconds": 8,
+    "presence_grace_seconds": 20,
+    "min_hit_ratio": 0.25
+  },
+
+  "alerts": {
+    "send_on_person_enter": true,
+    "send_on_person_leave": true,
+    "send_on_unknown": true,
+    "unknown_cooldown_seconds": 300,
+    "resend_while_present_seconds": 0,
+    "heartbeat_minutes": 0,
+    "night_mode": {
+      "enabled": false,
+      "start_hour": 23,
+      "end_hour": 7,
+      "_comment": "At night only 'Unknown' people alert. Known housemates stay quiet."
+    }
+  },
+
+  "photo": {
+    "quality": 82,
+    "max_width": 1280,
+    "draw_boxes": true,
+    "save_snapshots": true
+  },
+
+  "ntfy": {
+    "_comment": "SET YOUR OWN TOPIC. Pick a long random name (run test_phone.bat to have one generated), subscribe to that exact name in the ntfy app on your phone, and put it below. On the public ntfy.sh server anyone who knows a topic name can read it, and message IDs are sequential -- so a guessable name means strangers can page back through your alert photos. Never commit your real topic.",
+    "enabled": true,
+    "server": "https://ntfy.sh",
+    "topic": "PASTE_YOUR_SECRET_TOPIC_HERE"
+  },
+
+  "webhook": {
+    "_comment": "Optional alternative to ntfy. A plain multipart POST to a URL you control: a 'file' part with the JPEG and a 'content' part with the caption. Works with Discord webhooks and most receivers.",
+    "enabled": false,
+    "url": "PASTE_YOUR_WEBHOOK_URL_HERE",
+    "field_name": "file",
+    "header_name": "X-Webhook-Secret",
+    "header_value": ""
+  },
+
+  "console": {
+    "enabled": true
+  },
+
+  "storage": {
+    "snapshot_dir": "snapshots",
+    "keep_last_n": 200,
+    "_comment": "keep_last_n 0 = keep everything."
+  },
+
+  "runtime": {
+    "startup_delay_seconds": 4,
+    "log_level": "INFO",
+    "log_file": "roomwatch.log"
+  }
+}

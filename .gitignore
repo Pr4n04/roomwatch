@@ -1,0 +1,29 @@
+
+# Face models, ~40 MB, recreated by fetch_models.py
+# Local environment, recreated by setup.bat
+# Runtime output
+# Self-test scratch
+# Your enrolled faces. Never commit these.
+*.pyc
+__pycache__/
+_selftest/
+faces/*.tmp
+faces/people.json
+models/*.onnx
+models/*.part
+paused
+roomwatch.log
+roomwatch.log.*
+snapshots/
+venv/
+
+# Your live settings. config.example.json is the committed template; setup.bat
+# copies it to config.json on first run. Never commit the real one -- your ntfy
+# topic is a secret on a public server, and git history never forgets.
+config.json
+
+# macOS
+.DS_Store
+
+# One-off hand-off archives
+*.zip

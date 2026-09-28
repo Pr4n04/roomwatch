@@ -7,6 +7,7 @@ onto a fresh Windows laptop' a one-command install.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -60,6 +61,22 @@ def _header_utf8(text: str) -> str:
     ntfy and every other server expects.
     """
     return text.encode("utf-8").decode("latin-1")
+
+
+def _auth_header(token: str, username: str, password: str) -> str:
+    """The ntfy Authorization value, or "" for an open server.
+
+    A self-hosted ntfy running `auth-default-access: deny-all` accepts either an
+    access token (sent as a bearer) or HTTP Basic. A token wins when both are
+    filled in, so a leftover username in the config cannot quietly downgrade a
+    token to something weaker.
+    """
+    if _is_configured(token):
+        return "Bearer " + str(token).strip()
+    if _is_configured(username) and isinstance(password, str) and password:
+        raw = f"{username}:{password}".encode("utf-8")
+        return "Basic " + base64.b64encode(raw).decode("ascii")
+    return ""
 
 
 # --------------------------------------------------------------- multipart
@@ -120,15 +137,36 @@ def _post_multipart(url: str, fields: dict, files: dict, timeout: int = 30) -> d
 
 @dataclass
 class NtfyNotifier:
-    """The send_message / send_photo shape every channel implements."""
+    """The send_message / send_photo shape every channel implements.
+
+    Credentials are optional: on the public ntfy.sh there is no auth to send,
+    and leaving them empty is the normal case. Fill in `token` (or
+    `username`/`password`) only when you point `server` at an instance you
+    control -- see the self-hosting section of the README.
+    """
 
     server: str
     topic: str
     enabled: bool = True
+    token: str = ""
+    username: str = ""
+    password: str = ""
 
     @property
     def ready(self) -> bool:
         return bool(self.enabled) and _is_configured(self.topic)
+
+    @property
+    def auth_mode(self) -> str:
+        """How this channel authenticates: "token", "basic" or "open".
+
+        Safe to log -- it names the mode, never the secret.
+        """
+        if _is_configured(self.token):
+            return "token"
+        if _is_configured(self.username) and self.password:
+            return "basic"
+        return "open"
 
     def _post(self, title: str, body: bytes, content_type: str, filename: str | None = None,
               silent: bool = False) -> bool:
@@ -150,11 +188,27 @@ class NtfyNotifier:
             # Putting it in the URL path makes ntfy treat it as a page name
             # and answer 404 {"error":"page not found"}.
             headers["Filename"] = filename
+        auth = _auth_header(self.token, self.username, self.password)
+        if auth:
+            # A header, never a query parameter: a credential in the URL ends
+            # up in the server's access log and in every proxy along the way.
+            headers["Authorization"] = auth
         try:
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=25) as resp:
                 resp.read()
             return True
+        except urllib.error.HTTPError as exc:
+            # 401/403 almost always means the token or password is wrong. Say
+            # so, because ntfy's body ("unauthorized") on its own gives no clue
+            # which of the two settings to go and check.
+            if exc.code in (401, 403):
+                log.warning("ntfy refused the post (%s). auth is %s -- check the token or "
+                            "password, and that the user has access to topic %r.",
+                            exc.code, self.auth_mode, self.topic)
+            else:
+                log.warning("ntfy post failed: %s", exc)
+            return False
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
             log.warning("ntfy post failed: %s", exc)
             return False
@@ -293,6 +347,9 @@ def build_phone_channels(cfg: dict) -> list:
         server=str(ntfy_cfg.get("server") or "https://ntfy.sh"),
         topic=str(ntfy_cfg.get("topic") or ""),
         enabled=bool(ntfy_cfg.get("enabled")),
+        token=str(ntfy_cfg.get("token") or ""),
+        username=str(ntfy_cfg.get("username") or ""),
+        password=str(ntfy_cfg.get("password") or ""),
     )
     if ntfy.ready:
         channels.append(ntfy)
@@ -320,9 +377,19 @@ def channel_setup_problems(cfg: dict) -> list[str]:
                         "or webhook in config.json.")
         return problems
     if (cfg.get("ntfy") or {}).get("enabled"):
-        if not _is_configured((cfg.get("ntfy") or {}).get("topic")):
+        ntfy_cfg = cfg.get("ntfy") or {}
+        if not _is_configured(ntfy_cfg.get("topic")):
             problems.append('ntfy is enabled but "topic" is still the placeholder. '
                             "Subscribe to that topic in the ntfy app on your phone first.")
+        # A half-filled credential pair is the most likely self-hosting mistake:
+        # the user sets a username, leaves the password blank, and every alert
+        # comes back 403 with nothing in the log to explain it.
+        if _is_configured(ntfy_cfg.get("username")) and not (
+                _is_configured(ntfy_cfg.get("password")) or _is_configured(ntfy_cfg.get("token"))):
+            problems.append('ntfy has a "username" but no "password" or "token". Fill in '
+                            "one of them, or remove the username to use an open server.")
+        if _is_configured(ntfy_cfg.get("password")) and not _is_configured(ntfy_cfg.get("username")):
+            problems.append('ntfy has a "password" but no "username". Basic auth needs both.')
     if (cfg.get("webhook") or {}).get("enabled"):
         if not _is_configured((cfg.get("webhook") or {}).get("url")):
             problems.append('webhook is enabled but "url" is still the placeholder.')

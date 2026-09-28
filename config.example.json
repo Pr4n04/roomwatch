@@ -49,7 +49,11 @@
     "_comment": "SET YOUR OWN TOPIC. Pick a long random name (run test_phone.bat to have one generated), subscribe to that exact name in the ntfy app on your phone, and put it below. On the public ntfy.sh server anyone who knows a topic name can read it, and message IDs are sequential -- so a guessable name means strangers can page back through your alert photos. Never commit your real topic.",
     "enabled": true,
     "server": "https://ntfy.sh",
-    "topic": "PASTE_YOUR_SECRET_TOPIC_HERE"
+    "topic": "PASTE_YOUR_SECRET_TOPIC_HERE",
+    "_comment_auth": "Leave the three keys below empty for the public ntfy.sh, which has no accounts and no login. Fill in \"token\" (or \"username\" AND \"password\") ONLY if you point \"server\" at an ntfy you host yourself, started with auth-default-access deny-all -- then the topic name stops being the only thing protecting your alerts. A token is the better choice: it can be revoked on its own without changing a password. Never commit a real token or password; config.json is gitignored for this reason.",
+    "token": "",
+    "username": "",
+    "password": ""
   },
 
   "webhook": {

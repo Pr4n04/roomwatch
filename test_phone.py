@@ -87,6 +87,10 @@ def main(argv: list[str] | None = None) -> int:
         print("\nWhy the name has to be random: on the public ntfy.sh server, anyone")
         print("who knows a topic name can read that topic, so 'roomwatch' on its")
         print("own would let anyone who guessed it see your room photos.")
+        print("\nA random name is obscurity, though, not a password. If you want a")
+        print("real login in front of your alerts, self-host ntfy and set ntfy >")
+        print('"token" (or "username" and "password") as well -- see "Private')
+        print('instead: self-host ntfy" in the README.')
         return 2
 
     print(f"Configured channels: {', '.join(type(c).__name__.replace('Notifier', '') for c in channels)}\n")

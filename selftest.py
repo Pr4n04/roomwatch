@@ -11,8 +11,10 @@ Exit code 0 means every stage passed.
 
 from __future__ import annotations
 
+import base64
 import glob
 import json
+import logging
 import os
 import re
 import shutil
@@ -103,7 +105,7 @@ class MockPushServer(BaseHTTPRequestHandler):
             # Stored verbatim, exactly as ntfy does: no unquoting, so a
             # percent-encoded title shows up here and fails the check.
             "headers": {k.lower(): v for k, v in self.headers.items()
-                        if k.lower() in ("title", "filename", "tags", "priority")},
+                        if k.lower() in ("title", "filename", "tags", "priority", "authorization")},
         }
         photo: bytes | None = None
         if "multipart" in ctype:
@@ -132,6 +134,33 @@ class MockPushServer(BaseHTTPRequestHandler):
         RECEIVED.append(record)
         payload = json.dumps({"ok": True, "result": {"message_id": len(RECEIVED)}}).encode()
         self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *_a):
+        pass
+
+
+class MockDenyServer(BaseHTTPRequestHandler):
+    """A self-hosted ntfy that refuses unauthenticated posts.
+
+    This is what `auth-default-access: deny-all` actually does, and it is the
+    behaviour the public ntfy.sh never shows -- so it needs its own mock. A
+    permissive recorder would let a build with no credentials at all pass,
+    right up until the day it pointed at a private server and every alert
+    came back 403.
+    """
+    def do_POST(self):  # noqa: N802
+        self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
+        if not self.headers.get("Authorization"):
+            payload = json.dumps(
+                {"code": 40301, "http": 403, "error": "unauthorized"}).encode()
+            self.send_response(403)
+        else:
+            payload = json.dumps({"ok": True, "result": {"message_id": 1}}).encode()
+            self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
@@ -671,9 +700,105 @@ def main() -> int:
           len([r for r in RECEIVED if r.get("text")]) >= 2,
           f"{len([r for r in RECEIVED if r.get('text')])} texts")
 
+    print("\n=== 10. self-hosted ntfy authentication ===")
+    # The difference between "self-hosted" and "actually private" is this
+    # header. ntfy.sh has no accounts, so the no-credentials path must keep
+    # working unchanged; a deny-all server needs a real credential or it
+    # answers 403 to every alert.
+    RECEIVED.clear()
+    AUTH_TOKEN = "tk_selftest_not_a_real_token_0123456789"
+    AUTH_PW = "selftest-password-not-real"
+    auth_base = {"server": f"http://127.0.0.1:{port}", "topic": "selftest_auth", "enabled": True}
+    cases = {
+        "open": {},
+        "token": {"token": AUTH_TOKEN},
+        "basic": {"username": "selftest", "password": AUTH_PW},
+        "both": {"token": AUTH_TOKEN, "username": "selftest", "password": AUTH_PW},
+        "placeholder token": {"token": "PASTE_YOUR_NTFY_TOKEN_HERE"},
+    }
+    sent_auth: dict[str, str] = {}
+    for label, creds in cases.items():
+        before = len(RECEIVED)
+        got_ok = notifiers.NtfyNotifier(**auth_base, **creds).send_message("auth probe")
+        posts = [r for r in RECEIVED[before:] if r.get("channel") == "ntfy"]
+        sent_auth[label] = posts[0].get("headers", {}).get("authorization", "<none>") if posts else "<no post>"
+        check(f"ntfy still posts with {label} credentials",
+              got_ok and len(posts) == 1 and posts[0].get("text") == "auth probe",
+              sent_auth[label][:48])
+
+    check("an open server is sent no Authorization header at all",
+          sent_auth["open"] == "<none>", sent_auth["open"])
+    check("a token is sent as a bearer credential",
+          sent_auth["token"] == f"Bearer {AUTH_TOKEN}", sent_auth["token"])
+    basic_raw = sent_auth["basic"].split(" ", 1)[-1]
+    try:
+        decoded = base64.b64decode(basic_raw).decode("utf-8")
+    except Exception:  # noqa: BLE001 -- the check reports the value either way
+        decoded = "<not base64>"
+    check("a username and password are sent as Basic, not in the clear",
+          sent_auth["basic"].startswith("Basic ") and decoded == f"selftest:{AUTH_PW}",
+          f"decoded to {decoded!r}")
+    check("a token wins over a username, so a leftover username cannot weaken it",
+          sent_auth["both"] == f"Bearer {AUTH_TOKEN}", sent_auth["both"])
+    check("an unfilled token placeholder is treated as no token, not as one",
+          sent_auth["placeholder token"] == "<none>", sent_auth["placeholder token"])
+
+    check("auth_mode reports the mode, never the secret",
+          notifiers.NtfyNotifier(**auth_base).auth_mode == "open"
+          and notifiers.NtfyNotifier(**auth_base, token=AUTH_TOKEN).auth_mode == "token"
+          and notifiers.NtfyNotifier(**auth_base, username="u", password="p").auth_mode == "basic",
+          "open/token/basic")
+
+    # The credential must travel in a header. In the URL it lands in the
+    # server's access log and in any proxy log on the way.
+    photo_auth: list[str] = []
+    RECEIVED.clear()
+    notifiers.NtfyNotifier(**auth_base, token=AUTH_TOKEN).send_photo(
+        b"\xff\xd8\xff\xe0" + b"0" * 64 + b"\xff\xd9", "auth photo")
+    photo_auth = [r.get("headers", {}).get("authorization", "<none>") for r in RECEIVED]
+    check("the photo upload and its caption both carry the credential",
+          len(photo_auth) == 2 and all(v == f"Bearer {AUTH_TOKEN}" for v in photo_auth),
+          str([v[:24] for v in photo_auth]))
+    paths = [r.get("method", "") for r in RECEIVED]
+    check("the credential is never put in the URL",
+          all("tk_" not in p and "@" not in p for p in paths), str(paths[:2]))
+
+    # And a real deny-all server must accept the authenticated one and reject
+    # the open one, with a log line that says which of the two to go and check.
+    deny = HTTPServer(("127.0.0.1", 0), MockDenyServer)
+    deny_port = deny.server_address[1]
+    threading.Thread(target=deny.serve_forever, daemon=True).start()
+    logged: list[str] = []
+
+    class _Grab(logging.Handler):
+        def emit(self, record):
+            logged.append(record.getMessage())
+
+    grab = _Grab()
+    notifiers.log.addHandler(grab)
+    prev_level = notifiers.log.level
+    notifiers.log.setLevel(logging.WARNING)
+    try:
+        deny_base = {"server": f"http://127.0.0.1:{deny_port}", "topic": "selftest_auth",
+                     "enabled": True}
+        denied = notifiers.NtfyNotifier(**deny_base).send_message("no credentials")
+        allowed = notifiers.NtfyNotifier(**deny_base, token=AUTH_TOKEN).send_message("with token")
+    finally:
+        notifiers.log.removeHandler(grab)
+        notifiers.log.setLevel(prev_level)
+        deny.shutdown()
+    check("a deny-all server refuses an unauthenticated post and accepts the token",
+          denied is False and allowed is True, f"open={denied} token={allowed}")
+    check("the 403 is logged with the auth mode and topic, so it can be diagnosed",
+          any("token" in m and "selftest_auth" in m for m in logged),
+          " || ".join(logged)[:200])
+    check("no credential is ever written to the log",
+          not any(AUTH_TOKEN in m or AUTH_PW in m for m in logged),
+          " || ".join(logged)[:200])
+
     srv.shutdown()
 
-    print("\n=== 10. config guards ===")
+    print("\n=== 11. config guards ===")
     # config.json is gitignored because it holds a real ntfy topic, so a fresh
     # clone only has the tracked template. The self-test has to work either way.
     example_path = os.path.join(HERE, "config.example.json")
@@ -698,6 +823,28 @@ def main() -> int:
           example["ntfy"]["topic"].startswith("PASTE_"), example["ntfy"]["topic"])
     check("an unfilled ntfy topic is caught and explained",
           any("placeholder" in prob for prob in tpl_problems), str(tpl_problems))
+
+    # A fresh clone must not ship credentials, and must not look configured
+    # because someone left a placeholder token in the template.
+    check("the tracked template ships with no ntfy credentials",
+          all(not example["ntfy"].get(k) for k in ("token", "username", "password")),
+          str({k: example["ntfy"].get(k) for k in ("token", "username", "password")}))
+    half = {"ntfy": {"enabled": True, "topic": "room-x", "username": "me"}}
+    check("a username with no password or token is caught and explained",
+          any("password" in p for p in notifiers.channel_setup_problems(half)),
+          str(notifiers.channel_setup_problems(half)))
+
+    # config.json is where a real token or password lives, and this file is
+    # tracked. Assert the two never overlap, so a credential can never be
+    # committed by accident through a copy-paste into a test.
+    if os.path.exists(mine_path):
+        live_ntfy = config_mod.load(mine_path).get("ntfy") or {}
+        selftest_src = open(os.path.join(HERE, "selftest.py"), encoding="utf-8").read()
+        secrets_in_src = [k for k in ("token", "username", "password")
+                          if notifiers._is_configured(live_ntfy.get(k))
+                          and str(live_ntfy[k]) in selftest_src]
+        check("no live ntfy credential is hard-coded in this tracked file",
+              not secrets_in_src, f"leaked: {secrets_in_src}")
 
     for label, path in (("template", example_path), ("local config", mine_path)):
         if not os.path.exists(path):

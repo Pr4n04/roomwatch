@@ -171,8 +171,9 @@ through the history and look at it.
 
 That is why the topic name has to be unguessable. A name like `roomwatch`, or
 anything containing your name, hands your alert photos to a stranger who typed
-three guesses. If you would rather not think about it, self-host ntfy and point
-`server` at your own machine, so the photos never touch a public relay at all.
+three guesses. If you would rather not think about it, self-host ntfy with
+authentication — see **Private instead: self-host ntfy** below, which takes
+about ten minutes and puts a real password in front of your alerts.
 
 Changing it later is one line in `config.json`:
 
@@ -185,6 +186,94 @@ Changing it later is one line in `config.json`:
 ```
 
 Then re-subscribe in the app to the new name.
+
+### Private instead: self-host ntfy
+
+A long random topic is obscurity. If you would rather have a real password
+behind it, run your own ntfy — any always-on machine will do, and a spare
+Raspberry Pi alongside Home Assistant is plenty (ntfy idles at about 20 MB of
+RAM). Then your alert photos never touch a shared public server at all.
+
+**1. Start ntfy with every anonymous request denied.** This is the whole
+security model in one setting: with `deny-all`, a request without a valid
+credential gets `403`, whatever topic it asks for.
+
+```bash
+docker run -d --name ntfy --restart unless-stopped -p 80:80 \
+  -v ~/ntfy:/var/lib/ntfy \
+  -e NTFY_BASE_URL=https://ntfy.example.com \
+  -e NTFY_ENABLE_LOGIN=true \
+  -e NTFY_AUTH_DEFAULT_ACCESS=deny-all \
+  -e NTFY_AUTH_FILE=/var/lib/ntfy/auth.db \
+  binwiederhier/ntfy
+```
+
+Put a real certificate in front of it. The same docs that tell you to enable
+auth also tell you to use HTTPS, because Basic auth sends the password
+reversible — over plain HTTP it is just base64, not encryption. Caddy will do it
+in one line if you have a domain:
+
+```
+ntfy.example.com {
+  reverse_proxy localhost:80
+}
+```
+
+**2. Create a user, then hand it the topic.** You need a user with a *password*
+for the phone app to log in with, and access to the topic itself.
+
+```bash
+docker exec -it ntfy ntfy user add --role=admin yourname   # prompts for a password
+docker exec -it ntfy ntfy access yourname 'room-*' rw
+```
+
+The `room-*` pattern is an access-control rule, not a topic name: it lets that
+one user read and write anything under `room-`, and nobody else can touch it.
+
+**3. Mint a token for RoomWatch.** The phone logs in with the password; scripts
+should not, so give the laptop its own revocable credential:
+
+```bash
+docker exec -it ntfy ntfy token add yourname
+```
+
+It prints something like `tk_AbC123...`. Put it in `config.json`:
+
+```json
+"ntfy": {
+  "enabled": true,
+  "server": "https://ntfy.example.com",
+  "topic": "room-alerts",
+  "token": "tk_AbC123..."
+}
+```
+
+`token` is sent as `Authorization: Bearer …`, in a header rather than the URL so
+it stays out of access logs. `username` and `password` work too, as HTTP Basic,
+if you would rather not mint a token — a token is better because you can revoke
+it on its own. A token always wins if both are filled in, so a stale username
+left in the config cannot quietly downgrade it.
+
+**4. Point the phone app at your server.** In the app: Settings → Server →
+`https://ntfy.example.com`, then log in with the username and password from
+step 2, then subscribe to the same topic name. Subscribing on `ntfy.sh` will not
+see anything from your own server — they are completely separate.
+
+**5. Prove it.** Run `test_phone.bat`, then check the feed from a browser with
+no credentials at all:
+
+```
+curl -s https://ntfy.example.com/room-alerts/json
+```
+
+If that returns anything other than `403 unauthorized`, your alerts are still
+open to the world and something in steps 1–2 did not take. That one command is
+the real test of whether this worked.
+
+Two honest caveats. ntfy is not end-to-end encrypted, so the server can read
+your alerts — which is fine when you own the machine, and is the entire point.
+And on iOS the app is delivered through Apple's push service, so a self-hosted
+server still relies on APNs for the notification itself.
 
 ### Optional — a webhook instead
 
@@ -346,7 +435,7 @@ it ends at a "reopening it" message, the camera keeps dropping out; lower
 video with three faces in it, enrols two, runs the real pipeline against local
 mock ntfy and webhook servers, and checks the alerts that come out (including
 that each photo is a real decodable JPEG on every channel). It never touches your
-own enrolled faces, and it never posts to your real ntfy topic. 73 checks on a
+own enrolled faces, and it never posts to your real ntfy topic. 95 checks on a
 fresh clone, 76 once your own config is filled in, about
 50 seconds.
 

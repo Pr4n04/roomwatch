@@ -33,7 +33,17 @@ DEFAULTS: dict = {    "camera": {
         "night_mode": {"enabled": False, "start_hour": 23, "end_hour": 7},
     },
     "photo": {"quality": 82, "max_width": 1280, "draw_boxes": True, "save_snapshots": True},
-    "ntfy": {"enabled": False, "server": "https://ntfy.sh", "topic": ""},
+    "ntfy": {
+        "enabled": False,
+        "server": "https://ntfy.sh",
+        "topic": "",
+        # Credentials are only needed for a self-hosted server started with
+        # auth-default-access: deny-all. Empty means "open", which is correct
+        # for ntfy.sh and the only thing that server supports.
+        "token": "",
+        "username": "",
+        "password": "",
+    },
     "webhook": {
         "enabled": False,
         "url": "",
